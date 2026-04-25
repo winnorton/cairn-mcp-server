@@ -234,6 +234,24 @@ export function register(server: McpServer): void {
       const versionFile = path.join(projectPath, '.claude', 'cairn-version');
       const installed = safeReadText(versionFile)?.trim() || null;
 
+      // Adoptee VERSION drift: a root-level VERSION file may exist alongside
+      // .claude/cairn-version. They're different concepts — the adoptee may
+      // be tracking ITS OWN project's version at root VERSION, while
+      // .claude/cairn-version is canonical for "what cairn release is installed."
+      // Surface the values + drift flag so the caller can disambiguate.
+      const localVersionPath = path.join(projectPath, 'VERSION');
+      const localVersion = safeReadText(localVersionPath)?.trim() || null;
+      const localVersionDrift = {
+        has_local_version: localVersion !== null,
+        local_version: localVersion,
+        cairn_version: installed,
+        drift: !!localVersion && !!installed && localVersion !== installed,
+        note:
+          !!localVersion && !!installed && localVersion !== installed
+            ? "root VERSION may be the adoptee's own project version; .claude/cairn-version is canonical for which cairn release is installed."
+            : null,
+      };
+
       // Latest version (HTTP)
       const latest = await getCairnLatestVersion();
 
@@ -278,6 +296,7 @@ export function register(server: McpServer): void {
         cairn_version_installed: installed,
         cairn_version_latest: latest,
         version_drift: !!installed && !!latest && installed !== latest,
+        local_version_drift: localVersionDrift,
         tier_inferred: tierInferred,
         files_present: present,
         files_missing: missing,

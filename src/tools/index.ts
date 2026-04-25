@@ -10,6 +10,7 @@ import { register as registerOverclaimCheck } from './overclaim_check.js';
 import { register as registerLessonReplay } from './lesson_replay.js';
 import { register as registerNamespaceAudit } from './namespace_audit.js';
 import { register as registerHabitatProgress } from './habitat_progress.js';
+import { register as registerDistillateDock } from './distillate_dock.js';
 
 export function registerAllTools(server: McpServer): void {
   registerSlug(server);
@@ -24,4 +25,6 @@ export function registerAllTools(server: McpServer): void {
   registerLessonReplay(server);
   registerNamespaceAudit(server);
   registerHabitatProgress(server);
+  // v0.4.0 transport
+  registerDistillateDock(server);
 }
