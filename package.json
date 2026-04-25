@@ -1,6 +1,6 @@
 {
   "name": "cairn-mcp-server",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "MCP server for cairn habitats: slug resolution, wall-clock time, habitat status, version consistency, cross-slug memory query, feedback endpoint wrapper, and session-learning tools (distill / overclaim / lesson-replay / namespace-audit / habitat-progress).",
   "type": "module",
   "main": "dist/server.js",

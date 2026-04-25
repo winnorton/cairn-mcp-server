@@ -101,6 +101,25 @@ function inferTier(files: ManifestFile[], present: Set<string>): Tier | 'unknown
   return inferred;
 }
 
+/**
+ * Decide whether a captured token is a real path or just a path-shaped fragment
+ * (e.g. a slash-command reference like `/resume` inside narrative prose).
+ * Pass if any of:
+ *   - Windows drive path (always path-shaped)
+ *   - has a path separator AFTER the leading `~` or `/` (multi-segment)
+ *   - resolves to something on disk (last-resort safety net)
+ */
+function isPathLike(candidate: string): boolean {
+  if (/^[A-Za-z]:[\\/]/.test(candidate)) return true;
+  const afterPrefix = candidate.replace(/^~[\\/]?|^\//, '');
+  if (/[\\/]/.test(afterPrefix)) return true;
+  try {
+    return fs.existsSync(expandTilde(candidate));
+  } catch {
+    return false;
+  }
+}
+
 /** Parse `## Related memory paths` section out of HANDOFF.md. */
 function parseRelatedMemoryPaths(handoffText: string): string[] {
   const out: string[] = [];
@@ -117,7 +136,7 @@ function parseRelatedMemoryPaths(handoffText: string): string[] {
       const m = line.match(/[`-]\s*([~][^`\s)]+|\/[^`\s)]+|[A-Z]:[\\/][^`\s)]+)/);
       if (m) {
         const p = m[1].replace(/[`,]+$/, '').trim();
-        if (p && !out.includes(p)) out.push(p);
+        if (p && isPathLike(p) && !out.includes(p)) out.push(p);
       }
     }
   }
