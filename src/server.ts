@@ -6,7 +6,7 @@ import { registerAllTools } from './tools/index.js';
 async function main(): Promise<void> {
   const server = new McpServer({
     name: 'cairn-mcp-server',
-    version: '0.1.0',
+    version: '0.2.0',
   });
 
   registerAllTools(server);
