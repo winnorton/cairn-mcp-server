@@ -16,19 +16,37 @@ function uniq<T>(arr: T[]): T[] {
   return Array.from(new Set(arr));
 }
 
+const CHANGELOG_SECTION_RE = /^##\s+(status|changelog|releases?|history)\b/i;
+
+function stripChangelogSections(text: string): string {
+  const lines = text.split('\n');
+  const out: string[] = [];
+  let inChangelog = false;
+  for (const line of lines) {
+    if (/^##\s/.test(line)) {
+      inChangelog = CHANGELOG_SECTION_RE.test(line);
+      if (inChangelog) continue;
+    }
+    if (!inChangelog) out.push(line);
+  }
+  return out.join('\n');
+}
+
 function scanReadme(text: string): { values: string[] } {
+  const stripped = stripChangelogSections(text);
   const values: string[] = [];
   // Pattern 1: `@v0.10.8` (e.g. adopt URL pinning)
-  const at = [...text.matchAll(/@v(\d+\.\d+\.\d+)/g)].map((m) => m[1]);
+  const at = [...stripped.matchAll(/@v(\d+\.\d+\.\d+)/g)].map((m) => m[1]);
   values.push(...at);
-  // Pattern 2: `^v0.10.8 —` in Status section
-  const status = [...text.matchAll(/^v(\d+\.\d+\.\d+)\s+—/gm)].map((m) => m[1]);
+  // Pattern 2: `^v0.10.8 —` (legacy — usually inside changelog, now stripped)
+  const status = [...stripped.matchAll(/^v(\d+\.\d+\.\d+)\s+—/gm)].map((m) => m[1]);
   values.push(...status);
   return { values: uniq(values) };
 }
 
 function scanAdopt(text: string): { values: string[]; occurrences: number } {
-  const matches = [...text.matchAll(/cairn v(\d+\.\d+\.\d+)/g)].map((m) => m[1]);
+  const stripped = stripChangelogSections(text);
+  const matches = [...stripped.matchAll(/cairn v(\d+\.\d+\.\d+)/g)].map((m) => m[1]);
   return { values: uniq(matches), occurrences: matches.length };
 }
 
