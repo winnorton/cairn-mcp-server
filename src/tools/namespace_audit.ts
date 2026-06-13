@@ -1,7 +1,8 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
+import path from 'path';
 import { expandTilde, jsonResult } from '../helpers.js';
-import { loadTranscript, payloadToNormalized, type NormalizedTranscript } from '../helpers/transcript.js';
+import { loadTranscript, loadEnvelope, payloadToNormalized, type NormalizedTranscript } from '../helpers/transcript.js';
 
 /**
  * Verb dictionary: generic tool name(s) and the regex(es) we expect a verb-matched
@@ -183,14 +184,24 @@ export function register(server: McpServer): void {
         .array(z.string())
         .optional()
         .describe('List of tool names available in the session. If omitted, inferred from observed tool calls.'),
+      envelope_path: z
+        .string()
+        .optional()
+        .describe('[WS-09] Absolute path to a canonical .envelope.json file. Analysed instead of transcript_path/payload when provided.'),
     },
-    async ({ transcript_path, payload, available_tools }) => {
+    async ({ transcript_path, payload, available_tools, envelope_path }) => {
       let transcript: NormalizedTranscript;
       let source: 'transcript' | 'payload' = 'transcript';
       let sourcePath: string | undefined;
       const notes: string[] = [];
 
-      if (transcript_path) {
+      if (envelope_path) {
+        // WS-09 envelope branch (additive)
+        sourcePath = path.resolve(expandTilde(envelope_path));
+        transcript = loadEnvelope(sourcePath);
+        source = 'transcript'; // compatible label
+        if (transcript.notes) notes.push(...transcript.notes);
+      } else if (transcript_path) {
         sourcePath = expandTilde(transcript_path);
         transcript = loadTranscript(sourcePath);
         source = 'transcript';

@@ -1,7 +1,7 @@
 {
   "name": "cairn-mcp-server",
-  "version": "0.4.0",
-  "description": "MCP server for cairn habitats: slug resolution, wall-clock time, habitat status, version consistency, cross-slug memory query, feedback endpoint wrapper, and session-learning tools (distill / overclaim / lesson-replay / namespace-audit / habitat-progress).",
+  "version": "0.5.0",
+  "description": "MCP server for cairn habitats: slug resolution, wall-clock time, habitat status, version consistency, cross-slug memory query, feedback endpoint wrapper, session-learning tools (distill / overclaim / lesson-replay / namespace-audit / habitat-progress), and cross-harness session-ingestion pipeline (gather / manifest / corpus_status) for the cairn-sessions corpus.",
   "type": "module",
   "main": "dist/server.js",
   "bin": {
@@ -12,7 +12,9 @@
     "watch": "tsc -w",
     "start": "node dist/server.js",
     "console": "node dist/console/index.js",
-    "inspect": "npx -y @modelcontextprotocol/inspector node dist/server.js"
+    "inspect": "npx -y @modelcontextprotocol/inspector node dist/server.js",
+    "test-redaction": "node test/redaction.planted.mjs",
+    "validate-corpus": "node scripts/validate-corpus.mjs"
   },
   "files": [
     "dist",
@@ -42,6 +44,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
+    "ajv": "^8.20.0",
     "ink": "^7.0.1",
     "ink-spinner": "^5.0.0",
     "react": "^19.2.5",

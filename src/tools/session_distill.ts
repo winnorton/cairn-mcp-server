@@ -1,12 +1,14 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import path from 'path';
+import fs from 'fs';
 import { execFileSync } from 'child_process';
-import { expandTilde, jsonResult } from '../helpers.js';
-import { findRecentFiles, loadTranscript, payloadToNormalized, type NormalizedTranscript } from '../helpers/transcript.js';
+import { expandTilde, jsonResult, safeReadText } from '../helpers.js';
+import { findRecentFiles, loadTranscript, loadEnvelope, payloadToNormalized, type NormalizedTranscript } from '../helpers/transcript.js';
 import { detectClaims, checkVerification } from '../helpers/agent_claims.js';
 import { runOverclaimCheck } from './overclaim_check.js';
 import { runNamespaceAudit } from './namespace_audit.js';
+import { writeFindingsLedger, loadPriorPatternNames, type Finding } from './findings_ledger.js';
 
 interface RedundantCallReport {
   tool: string;
@@ -328,14 +330,55 @@ export function register(server: McpServer): void {
         .optional()
         .default(120)
         .describe('If neither transcript nor payload is given, scan recent activity within this window (degraded mode).'),
+      // WS-09 additions — all optional, additive only
+      envelope_path: z
+        .string()
+        .optional()
+        .describe('[WS-09] Absolute path to a canonical .envelope.json file (from cairn-sessions/normalized/). When provided, the envelope is analysed instead of transcript_path/payload. Existing inputs still work unchanged.'),
+      write_findings: z
+        .boolean()
+        .optional()
+        .default(false)
+        .describe('[WS-09] When true (and envelope_path is provided), persist a findings/<session_id>.findings.json to corpus_root and update LEDGER.md.'),
+      corpus_root: z
+        .string()
+        .optional()
+        .describe('[WS-09] Absolute path to the cairn-sessions corpus root. Defaults to ~/projects/cairn/cairn-sessions. Used for findings write and prior-pattern loading.'),
     },
-    async ({ transcript_path, payload, project_path, recent_window_minutes }) => {
+    async ({ transcript_path, payload, project_path, recent_window_minutes, envelope_path, write_findings, corpus_root }) => {
       const projectPath = project_path ? path.resolve(expandTilde(project_path)) : process.cwd();
       let transcript: NormalizedTranscript;
       let degraded = false;
       const notes: string[] = [];
 
-      if (transcript_path) {
+      // WS-09: resolve corpus root for findings + prior-pattern loading
+      const corpusRoot = corpus_root
+        ? path.resolve(expandTilde(corpus_root))
+        : path.join(process.env.USERPROFILE || process.env.HOME || '', 'projects', 'cairn', 'cairn-sessions');
+
+      // WS-09: determine if we have an envelope (either explicit or auto-detected)
+      let resolvedEnvelopePath: string | null = null;
+      if (envelope_path) {
+        resolvedEnvelopePath = path.resolve(expandTilde(envelope_path));
+      } else if (transcript_path) {
+        // Auto-detect: if the transcript_path IS a .envelope.json, route it through the envelope branch
+        const tp = expandTilde(transcript_path);
+        if (tp.endsWith('.envelope.json')) {
+          resolvedEnvelopePath = path.resolve(tp);
+        }
+      }
+
+      // WS-09: load prior pattern names to seed the analysis context
+      const priorPatternNames = loadPriorPatternNames(corpusRoot);
+
+      if (resolvedEnvelopePath) {
+        // --- Envelope branch (WS-09) ---
+        transcript = loadEnvelope(resolvedEnvelopePath);
+        if (transcript.notes) notes.push(...transcript.notes);
+        if (priorPatternNames.length > 0) {
+          notes.push(`[WS-09] Prior patterns seeded (${priorPatternNames.length}): ${priorPatternNames.slice(0, 5).join(', ')}${priorPatternNames.length > 5 ? ', ...' : ''}`);
+        }
+      } else if (transcript_path) {
         transcript = loadTranscript(expandTilde(transcript_path));
         if (transcript.notes) notes.push(...transcript.notes);
       } else if (payload) {
@@ -385,7 +428,78 @@ export function register(server: McpServer): void {
         suggested_law_candidates: suggestedLaws,
         human_reviewer_notes: reviewerBits.join(' '),
       };
-      return jsonResult(result);
+
+      // WS-09: findings ledger write (only when envelope_path provided + write_findings=true)
+      let findings_written: string | null = null;
+      let ledger_updated = false;
+      if (resolvedEnvelopePath && write_findings) {
+        try {
+          const envText = safeReadText(resolvedEnvelopePath);
+          const envObj = envText ? JSON.parse(envText) : null;
+          const sessionId: string = envObj?.session?.id ?? path.basename(resolvedEnvelopePath).replace(/\.envelope\.json$/, '');
+          const harness: string = envObj?.session?.harness ?? 'unknown';
+          const patterns: Finding['patterns'] = [];
+
+          // Map suggested memory/law candidates → pattern catalog entries
+          for (const mem of suggestedMem) {
+            patterns.push({ name: mem.name, instance_count: 1, evidence: 'session_distill:suggested_memory' });
+          }
+          for (const law of suggestedLaws) {
+            patterns.push({ name: law.slug, instance_count: 1, evidence: 'session_distill:suggested_law' });
+          }
+          if (redundant.length > 0) {
+            patterns.push({ name: 'redundant-tool-calls', instance_count: redundant.length, evidence: `redundant_calls[0].tool=${redundant[0].tool}` });
+          }
+          if (overclaim.unverified_claims.length > 0) {
+            patterns.push({ name: 'unverified-completion-claims', instance_count: overclaim.unverified_claims.length, evidence: `unverified_claims[0].ts=${overclaim.unverified_claims[0].ts}` });
+          }
+          if (namespace.missed_alternatives.length > 0) {
+            patterns.push({ name: 'namespace-bias', instance_count: namespace.missed_alternatives.length, evidence: `bias_score=${namespace.namespace_bias_score}` });
+          }
+
+          // Seed known prior patterns so they are recognized, not re-derived
+          for (const pname of priorPatternNames) {
+            if (!patterns.some((p) => p.name === pname)) {
+              patterns.push({ name: pname, instance_count: 0, evidence: 'prior-ledger-seed' });
+            }
+          }
+
+          const finding: Finding = {
+            session_id: sessionId,
+            distilled_at: new Date().toISOString(),
+            distiller: 'session_distill@ws09',
+            harness,
+            patterns,
+            candidates: {
+              skills: [],
+              laws: suggestedLaws.map((l) => l.slug),
+              memory: suggestedMem.map((m) => m.name),
+            },
+            links: { note: null, commit: null },
+          };
+
+          const { findingsPath, ledgerUpdated } = writeFindingsLedger(corpusRoot, sessionId, harness, finding);
+          findings_written = findingsPath;
+          ledger_updated = ledgerUpdated;
+        } catch (e) {
+          notes.push(`[WS-09] findings write failed: ${e instanceof Error ? e.message : String(e)}`);
+        }
+      }
+
+      // Augment result with WS-09 ledger metadata (additive, never removes existing fields)
+      const fullResult = {
+        ...result,
+        ...(resolvedEnvelopePath ? {
+          ws09_envelope: {
+            envelope_path: resolvedEnvelopePath,
+            prior_patterns_seeded: priorPatternNames.length,
+            findings_written,
+            ledger_updated,
+          },
+        } : {}),
+      };
+
+      return jsonResult(fullResult);
     }
   );
 }

@@ -30,7 +30,8 @@ export interface NormalizedUserText {
 }
 
 export interface NormalizedTranscript {
-  format: 'jsonl-claude-code' | 'protobuf-antigravity' | 'payload' | 'unknown';
+  format: 'jsonl-claude-code' | 'protobuf-antigravity' | 'payload' | 'unknown'
+        | 'envelope-claude-code' | 'envelope-pi' | 'envelope-antigravity';
   notes?: string[];
   tool_calls: NormalizedToolCall[];
   file_changes: NormalizedFileChange[];
@@ -211,6 +212,115 @@ export function payloadToNormalized(payload: {
     agent_text_blocks: (payload.agent_claims ?? []).map((c) => ({ ts: c.ts, text: c.text })),
     user_text_blocks: [],
   };
+}
+
+// ---------------------------------------------------------------------------
+// Envelope → NormalizedTranscript bridge  (WS 09)
+// ---------------------------------------------------------------------------
+
+/**
+ * Convert a canonical session Envelope into the NormalizedTranscript shape
+ * consumed by all existing analysis helpers (detectRedundantCalls,
+ * runOverclaimCheck, runNamespaceAudit, etc.).
+ *
+ * This is a LOSSLESS projection for what the analysis tools need:
+ *  - tool_call events  → tool_calls
+ *  - assistant message events → agent_text_blocks
+ *  - user message events → user_text_blocks
+ *  - tool_result / error events → (duration annotated back onto matching tool_call)
+ *  - file_changes: inferred from Write/Edit/NotebookEdit tool args_digest names
+ *    (best-effort; envelopes don't store full args, only digest)
+ *
+ * The returned format tag is 'envelope-<harness>' so callers can distinguish.
+ */
+export function envelopeToNormalized(envelope: import('../adapters/types.js').Envelope): NormalizedTranscript {
+  const { session, events } = envelope;
+  const format = `envelope-${session.harness}` as NormalizedTranscript['format'];
+
+  const tool_calls: NormalizedToolCall[] = [];
+  const file_changes: NormalizedFileChange[] = [];
+  const agent_text_blocks: NormalizedAgentText[] = [];
+  const user_text_blocks: NormalizedUserText[] = [];
+
+  // Index tool_call events by seq so tool_result can annotate duration.
+  const pendingBySeq = new Map<number, number>(); // seq → index in tool_calls
+
+  for (const ev of events) {
+    const ts = ev.ts ?? new Date(0).toISOString();
+
+    if (ev.type === 'tool_call' && ev.tool) {
+      const idx = tool_calls.length;
+      tool_calls.push({
+        ts,
+        tool: ev.tool.name,
+        // args_digest is a hash, not the real args — pass it as an opaque string
+        args: ev.tool.args_digest ? { _digest: ev.tool.args_digest } : undefined,
+        duration_ms: ev.tool.duration_ms ?? undefined,
+      });
+      pendingBySeq.set(ev.seq, idx);
+
+      // Best-effort file-change inference from tool name (no full args in envelope)
+      if (['Write', 'Edit', 'NotebookEdit'].includes(ev.tool.name)) {
+        file_changes.push({ ts, path: `<redacted-digest:${ev.tool.args_digest ?? '?'}>`, change: ev.tool.name === 'Write' ? 'create' : 'modify' });
+      }
+    } else if (ev.type === 'tool_result' && ev.tool) {
+      // Annotate duration onto the matching tool_call (if not already set)
+      const matchSeq = ev.seq - 1; // heuristic: result immediately follows call
+      // Walk backward to find a matching tool call by name
+      for (let i = tool_calls.length - 1; i >= 0; i--) {
+        const tc = tool_calls[i];
+        if (tc.tool === ev.tool.name && tc.duration_ms === undefined && ev.tool.duration_ms !== null) {
+          tc.duration_ms = ev.tool.duration_ms ?? undefined;
+          break;
+        }
+      }
+      void matchSeq; // suppress unused-variable lint
+    } else if (ev.type === 'message') {
+      if (ev.role === 'assistant' && ev.text) {
+        agent_text_blocks.push({ ts, text: ev.text });
+      } else if ((ev.role === 'user' || ev.role === 'system') && ev.text) {
+        user_text_blocks.push({ ts, text: ev.text });
+      }
+    } else if (ev.type === 'error' && ev.text) {
+      // Surface errors as agent text so overclaim/decision detectors can see them
+      agent_text_blocks.push({ ts, text: `[ERROR] ${ev.text}` });
+    }
+  }
+
+  return { format, tool_calls, file_changes, agent_text_blocks, user_text_blocks };
+}
+
+/**
+ * Load an envelope JSON file and convert it to NormalizedTranscript.
+ * Returns an 'unknown' transcript with a note on read/parse failure.
+ */
+export function loadEnvelope(envelopePath: string): NormalizedTranscript {
+  const text = safeReadText(envelopePath);
+  if (text === null) {
+    return {
+      format: 'unknown',
+      notes: [`could not read envelope: ${envelopePath}`],
+      tool_calls: [], file_changes: [], agent_text_blocks: [], user_text_blocks: [],
+    };
+  }
+  let envelope: import('../adapters/types.js').Envelope;
+  try {
+    envelope = JSON.parse(text);
+  } catch (e) {
+    return {
+      format: 'unknown',
+      notes: [`could not parse envelope JSON at ${envelopePath}: ${e}`],
+      tool_calls: [], file_changes: [], agent_text_blocks: [], user_text_blocks: [],
+    };
+  }
+  if (!envelope || typeof envelope !== 'object' || !envelope.session || !Array.isArray(envelope.events)) {
+    return {
+      format: 'unknown',
+      notes: [`not a valid envelope at ${envelopePath}: missing session or events`],
+      tool_calls: [], file_changes: [], agent_text_blocks: [], user_text_blocks: [],
+    };
+  }
+  return envelopeToNormalized(envelope);
 }
 
 /** Walk a directory for files with a given extension, with optional mtime cutoff. */

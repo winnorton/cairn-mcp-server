@@ -1,0 +1,142 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/winnorton/cairn-mcp-server/schema/envelope.schema.json",
+  "title": "CairnSessionEnvelope",
+  "description": "Canonical, harness-agnostic session envelope. One document per session under normalized/<harness>/<project_slug>/<id>.envelope.json.",
+  "type": "object",
+  "required": ["schema_version", "content_hash", "session", "events"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "1.0",
+      "description": "Schema version — bumped on any breaking change."
+    },
+    "content_hash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "SHA-256 hex digest of the raw input file. Idempotence key: re-ingesting the same raw is a no-op."
+    },
+    "session": {
+      "type": "object",
+      "required": ["id", "harness", "harness_version", "model", "provider", "project_slug", "cwd", "started_at", "ended_at", "redaction"],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Session UUID (from harness or derived)."
+        },
+        "harness": {
+          "type": "string",
+          "enum": ["claude-code", "pi", "antigravity"],
+          "description": "Source harness name."
+        },
+        "harness_version": {
+          "type": ["string", "null"],
+          "description": "Harness version string if present in raw data."
+        },
+        "model": {
+          "type": ["string", "null"],
+          "description": "Model name/id used in this session."
+        },
+        "provider": {
+          "type": ["string", "null"],
+          "description": "Provider (e.g. anthropic, openai, google)."
+        },
+        "project_slug": {
+          "type": "string",
+          "description": "Project slug derived from cwd or harness metadata."
+        },
+        "cwd": {
+          "type": ["string", "null"],
+          "description": "Working directory at session start."
+        },
+        "started_at": {
+          "type": ["string", "null"],
+          "description": "ISO-8601 timestamp of first event."
+        },
+        "ended_at": {
+          "type": ["string", "null"],
+          "description": "ISO-8601 timestamp of last event."
+        },
+        "redaction": {
+          "type": "object",
+          "required": ["scrubbed", "rules_version", "hits"],
+          "additionalProperties": false,
+          "properties": {
+            "scrubbed": {
+              "type": "boolean",
+              "description": "MUST be true for a valid persisted envelope (§4 gate)."
+            },
+            "rules_version": {
+              "type": "string",
+              "description": "Version string from the scrubber's RULES_VERSION constant."
+            },
+            "hits": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Number of secrets redacted from this session."
+            }
+          }
+        }
+      }
+    },
+    "events": {
+      "type": "array",
+      "description": "Ordered event sequence extracted from the raw transcript.",
+      "items": {
+        "type": "object",
+        "required": ["seq", "ts", "role", "type"],
+        "additionalProperties": false,
+        "properties": {
+          "seq": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Zero-based monotonically increasing sequence index."
+          },
+          "ts": {
+            "type": ["string", "null"],
+            "description": "ISO-8601 timestamp from raw data, or null if absent."
+          },
+          "role": {
+            "type": "string",
+            "enum": ["user", "assistant", "tool", "system"],
+            "description": "Message role."
+          },
+          "type": {
+            "type": "string",
+            "enum": ["message", "tool_call", "tool_result", "error", "compaction", "model_change"],
+            "description": "Event type."
+          },
+          "text": {
+            "type": ["string", "null"],
+            "description": "Human-readable text payload (already redacted)."
+          },
+          "tool": {
+            "type": ["object", "null"],
+            "required": ["name"],
+            "additionalProperties": false,
+            "properties": {
+              "name": { "type": "string" },
+              "args_digest": { "type": ["string", "null"] },
+              "duration_ms": { "type": ["number", "null"] },
+              "is_error": { "type": "boolean" }
+            }
+          },
+          "stop_reason": {
+            "type": ["string", "null"],
+            "description": "Stop reason if present in raw (e.g. end_turn, tool_use)."
+          },
+          "tokens": {
+            "type": ["object", "null"],
+            "additionalProperties": false,
+            "properties": {
+              "in": { "type": ["number", "null"] },
+              "out": { "type": ["number", "null"] }
+            }
+          }
+        }
+      }
+    }
+  }
+}

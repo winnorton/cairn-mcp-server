@@ -1,0 +1,35 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: ["main"]
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install dependencies
+        run: npm ci || npm install
+
+      - name: Build
+        run: npm run build
+
+      - name: Run tests
+        run: node test/redaction.planted.mjs && node test/adapter_cc.mjs && node test/adapter_pi.mjs && node test/adapter_antigravity.mjs && node test/detect_smoke.mjs
+
+      - name: Validate corpus (skip gracefully if not checked out)
+        run: npm run validate-corpus
+        env:
+          # In CI the cairn-sessions repo is not checked out alongside this repo,
+          # so the script exits 0 with a warning when the corpus root is missing.
+          # To run against a real corpus, set CORPUS_ROOT to its absolute path.
+          CORPUS_ROOT: ""

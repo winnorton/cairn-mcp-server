@@ -1,6 +1,8 @@
 # cairn-mcp-server
 
-An MCP (Model Context Protocol) server that exposes utilities useful to agents working in [cairn](https://github.com/winnorton/cairn) habitats: deterministic project-slug resolution, wall-clock time, composite habitat status, version-consistency checks, cross-slug memory query, a hosted-feedback wrapper, and a suite of session-learning tools (distill / overclaim / lesson-replay / namespace-audit / habitat-progress). This server is a *companion* to the cairn markdown habitat — it doesn't replace anything in cairn, just makes some recurring agent probes faster than ad-hoc shell commands.
+**v0.5.0**
+
+An MCP (Model Context Protocol) server that exposes utilities useful to agents working in [cairn](https://github.com/winnorton/cairn) habitats: deterministic project-slug resolution, wall-clock time, composite habitat status, version-consistency checks, cross-slug memory query, a hosted-feedback wrapper, a suite of session-learning tools (distill / overclaim / lesson-replay / namespace-audit / habitat-progress), and a cross-harness session-ingestion pipeline (gather / manifest / corpus_status) that normalizes Claude Code, Pi, and Antigravity sessions into the `cairn-sessions` corpus. This server is a *companion* to the cairn markdown habitat — it doesn't replace anything in cairn, just makes some recurring agent probes faster than ad-hoc shell commands.
 
 ## Tools
 
@@ -14,11 +16,14 @@ An MCP (Model Context Protocol) server that exposes utilities useful to agents w
 | `check_version_consistency` | Version | Scan VERSION, manifest.json, README.md, adopt.md, HANDOFF.md for matching versions. |
 | `memory_query` | Memory | Search memory entries across one or more project slugs. |
 | `feedback_post` | Feedback | POST to cairn's hosted feedback endpoint with three-level fallback. |
-| `session_distill` | Session learning | Umbrella tool: parse a session transcript and surface tool breakdown, redundant calls, namespace gaps, overclaim findings, decision points, and suggested cairn-typed memory + law candidates. |
-| `overclaim_check` | Session learning | Detect agent completion claims ("done", "fixed", "should now work") and check for subsequent verification activity. |
+| `session_distill` | Session learning | Umbrella tool: parse a session transcript (or canonical `.envelope.json`) and surface tool breakdown, redundant calls, namespace gaps, overclaim findings, decision points, and suggested cairn-typed memory + law candidates. Accepts `envelope_path` to consume a corpus envelope directly; `write_findings: true` persists results to `findings/<id>.findings.json` and updates `LEDGER.md`. |
+| `overclaim_check` | Session learning | Detect agent completion claims ("done", "fixed", "should now work") and check for subsequent verification activity. Accepts `envelope_path` as an alternative to `transcript_path`. |
 | `lesson_replay` | Session learning | Retrospectively scan past transcripts for moments where a candidate lesson would have applied. |
-| `namespace_audit` | Session learning | Law-8 detector: surfaces moments where the agent reached for generic tools (Read, grep, Bash) when verb-matched specialized tools existed. |
+| `namespace_audit` | Session learning | Law-8 detector: surfaces moments where the agent reached for generic tools (Read, grep, Bash) when verb-matched specialized tools existed. Accepts `envelope_path` as an alternative to `transcript_path`. |
 | `habitat_progress` | Session learning | Longitudinal citation accounting: per-law/per-memory citation counts, last-cited dates, stale/hot/unused entries. |
+| `gather` | Corpus ingestion | Discover and ingest session transcripts from all three harness roots (Claude Code, Pi, Antigravity) into the cairn-sessions corpus. Dry-run or persist; idempotent dedup on `content_hash`. |
+| `manifest` | Corpus ingestion | Generate `MANIFEST.md` and `schema/manifest-row.schema.json` from all `normalized/**/*.envelope.json` files. Check mode verifies row count == envelope count and id uniqueness (CI gate). |
+| `corpus_status` | Corpus ingestion | Diagnostic: scan `normalized/` and `findings/` and report per-harness counts, distilled ratio, ledger size, last-distilled timestamp, and accumulated pattern catalog. |
 
 ## Install
 
@@ -122,6 +127,55 @@ The Law-8 (`survey-tools-by-verb`) detector. Walks a verb dictionary (`search`, 
 ### `habitat_progress({ project_path?, since?, slugs? })`
 
 Longitudinal citation accounting. Greps the project source + project-scoped memory root for `[LAW <slug>]` and `[MEM <type>/<name>]` patterns and aggregates per law/entry. Returns `laws` and `memory` arrays (with citation counts, last-cited ISO, files), `stale_entries` (cited ≤1x or last-cited >60d ago), `hot_entries` (cited ≥5x — promotion candidates), and `unused_candidates` (laws/memory entries that exist on disk but were never cited). Useful for periodic memory hygiene.
+
+### `gather({ mode, paths?, corpus_root? })` — v0.5.0
+
+Discover and ingest sessions into the `cairn-sessions` corpus.
+
+- `mode: "dry-run"` — list candidate raw session files across all three harness roots (`~/.claude/projects/`, `~/.pi/agent/sessions/`, `~/.gemini/antigravity/conversations/`) without writing anything.
+- `mode: "persist"` — normalize each selected session through `detect → adapter → scrub → validate → dedup → write`. Requires `corpus_root`. If `paths` is omitted, processes all discovered candidates.
+
+The pipeline: `normalizeAuto(rawPath)` calls `detect()` to identify harness, dispatches to the correct adapter (`claude-code.ts`, `pi.ts`, or `antigravity.ts`), scrubs secrets (`scrubEnvelope()`), asserts `redaction.scrubbed == true`, deduplicates on `content_hash`, and writes to `normalized/<harness>/<project_slug>/<id>.envelope.json`.
+
+Idempotent: re-ingesting a session with the same `content_hash` returns `action: "skipped_duplicate"`.
+
+### `manifest({ corpus_root, mode? })` — v0.5.0
+
+Generate or check `MANIFEST.md` from all `normalized/**/*.envelope.json` files.
+
+- `mode: "generate"` (default) — scan envelopes, write `MANIFEST.md` and `schema/manifest-row.schema.json`. One row per session per §2.3.
+- `mode: "check"` — verify row count == envelope count and no duplicate ids. Non-zero conceptual exit on failure (CI gate per program master §6).
+
+### `corpus_status({ corpus_root?, include_session_list? })` — v0.5.0
+
+Diagnostic scan of the cairn-sessions corpus. Reports:
+
+- Per-harness and per-project envelope counts, distilled vs undistilled ratio
+- Findings coverage: total, last-distilled timestamp, accumulated pattern catalog (unique pattern names across all `findings/*.json`)
+- Schema and manifest file presence checks
+- `include_session_list: true` includes the full per-session list (can be large; defaults false)
+
+Defaults `corpus_root` to `~/projects/cairn/cairn-sessions`.
+
+### `session_distill` — `envelope_path` branch (v0.5.0 addition)
+
+The existing `session_distill` tool gains an optional `envelope_path` parameter:
+
+```
+session_distill({
+  envelope_path: "/path/to/cairn-sessions/normalized/claude-code/.../id.envelope.json",
+  write_findings: true,   // optional — persists findings/<id>.findings.json + LEDGER.md
+  corpus_root: "/path/to/cairn-sessions",  // optional — defaults to ~/projects/cairn/cairn-sessions
+})
+```
+
+When `envelope_path` is provided (or `transcript_path` points to a `.envelope.json`), the tool routes through the envelope branch: loads the canonical envelope, seeds the analysis with prior pattern names from `findings/*.json` (so patterns compound), and if `write_findings: true`, persists a `Finding` document and updates `LEDGER.md`. All existing inputs (`transcript_path`, `payload`, degraded mode) remain unchanged — this is strictly additive.
+
+The `overclaim_check` and `namespace_audit` tools similarly accept `envelope_path` as an alternative input branch.
+
+### `distillate_dock` — cross-habitat transport (v0.4.0 tool; corpus role documented in v0.5.0)
+
+When called after a `session_distill` with `write_findings: true`, `distillate_dock` can transport the resulting memory candidates to downstream consumer habitats (e.g. Antigravity's `~/.gemini/antigravity/memory/`). The findings write happens inside `session_distill` itself via `findings_ledger.ts`; `distillate_dock` handles the cross-habitat transport step.
 
 ## Build instructions
 

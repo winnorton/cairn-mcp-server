@@ -11,6 +11,9 @@ import { register as registerLessonReplay } from './lesson_replay.js';
 import { register as registerNamespaceAudit } from './namespace_audit.js';
 import { register as registerHabitatProgress } from './habitat_progress.js';
 import { register as registerDistillateDock } from './distillate_dock.js';
+import { register as registerGather } from './gather.js';
+import { register as registerManifest } from './manifest.js';
+import { register as registerCorpusStatus } from './corpus_status.js';
 
 export function registerAllTools(server: McpServer): void {
   registerSlug(server);
@@ -27,4 +30,8 @@ export function registerAllTools(server: McpServer): void {
   registerHabitatProgress(server);
   // v0.4.0 transport
   registerDistillateDock(server);
+  // v0.5.0 HIVE_CONTEXT_SESSIONS corpus tools (WS 08, WS 09)
+  registerGather(server);
+  registerManifest(server);
+  registerCorpusStatus(server);
 }

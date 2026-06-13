@@ -1,7 +1,8 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
+import path from 'path';
 import { expandTilde, jsonResult } from '../helpers.js';
-import { loadTranscript, payloadToNormalized, type NormalizedTranscript } from '../helpers/transcript.js';
+import { loadTranscript, loadEnvelope, payloadToNormalized, type NormalizedTranscript } from '../helpers/transcript.js';
 import { detectClaims, checkVerification } from '../helpers/agent_claims.js';
 
 export interface OverclaimResult {
@@ -107,14 +108,24 @@ export function register(server: McpServer): void {
         .optional()
         .describe('Absolute path to a session transcript file (.jsonl preferred).'),
       payload: PayloadSchema.optional().describe('Pre-parsed payload as an alternative to transcript_path.'),
+      envelope_path: z
+        .string()
+        .optional()
+        .describe('[WS-09] Absolute path to a canonical .envelope.json file. Analysed instead of transcript_path/payload when provided.'),
     },
-    async ({ transcript_path, payload }) => {
+    async ({ transcript_path, payload, envelope_path }) => {
       let transcript: NormalizedTranscript;
       let source: OverclaimResult['source'] = 'none';
       let sourcePath: string | undefined;
       const notes: string[] = [];
 
-      if (transcript_path) {
+      if (envelope_path) {
+        // WS-09 envelope branch (additive — does not affect existing paths)
+        sourcePath = path.resolve(expandTilde(envelope_path));
+        transcript = loadEnvelope(sourcePath);
+        source = 'transcript'; // compatible label for existing consumers
+        if (transcript.notes) notes.push(...transcript.notes);
+      } else if (transcript_path) {
         sourcePath = expandTilde(transcript_path);
         transcript = loadTranscript(sourcePath);
         source = 'transcript';
