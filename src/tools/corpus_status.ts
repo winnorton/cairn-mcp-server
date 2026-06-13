@@ -177,6 +177,93 @@ function countLedgerRows(ledgerPath: string): number {
 }
 
 // ---------------------------------------------------------------------------
+// Exported corpus-status function (§1 refactor — CLI can call directly)
+// ---------------------------------------------------------------------------
+
+export type CorpusStatus = CorpusStatusResult;
+
+/**
+ * Scan the corpus at `corpusRoot` and return the same status object the MCP
+ * tool has always returned. Extracted so `cairn-ingest status` can call it
+ * directly without going through the MCP layer.
+ *
+ * @param corpusRoot Absolute path to the cairn-sessions corpus root.
+ * @param includeSessionList When true, populate `envelopes.sessions` array.
+ */
+export function corpusStatus(corpusRoot: string, includeSessionList = false): CorpusStatus {
+  const resolvedRoot = path.resolve(expandTilde(corpusRoot));
+
+  const result: CorpusStatusResult = {
+    corpus_root: resolvedRoot,
+    scanned_at: new Date().toISOString(),
+    envelopes: {
+      total: 0,
+      by_harness: {},
+      by_project: {},
+      distilled: 0,
+      undistilled: 0,
+      sessions: [],
+    },
+    findings: {
+      total: 0,
+      last_distilled: null,
+      ledger_exists: false,
+      ledger_row_count: 0,
+      pattern_catalog: [],
+    },
+    schema: {
+      envelope_schema_exists: false,
+      finding_schema_exists: false,
+      manifest_exists: false,
+    },
+    error: null,
+  };
+
+  const rootStat = safeStat(resolvedRoot);
+  if (!rootStat || !rootStat.isDirectory()) {
+    result.error = `corpus_root not found or not a directory: ${resolvedRoot}`;
+    return result;
+  }
+
+  try {
+    // Schema presence checks
+    result.schema.envelope_schema_exists = fs.existsSync(path.join(resolvedRoot, 'schema', 'envelope.schema.json'));
+    result.schema.finding_schema_exists = fs.existsSync(path.join(resolvedRoot, 'schema', 'finding.schema.json'));
+    result.schema.manifest_exists = fs.existsSync(path.join(resolvedRoot, 'MANIFEST.md'));
+
+    // Findings scan (first, so we can annotate envelopes with has_findings)
+    const findingsDir = path.join(resolvedRoot, 'findings');
+    const ledgerFilePath = path.join(findingsDir, 'LEDGER.md');
+    const { ids: findingIds, lastDistilled, patternCatalog } = scanFindings(findingsDir);
+    result.findings.total = findingIds.size;
+    result.findings.last_distilled = lastDistilled;
+    result.findings.ledger_exists = fs.existsSync(ledgerFilePath);
+    result.findings.ledger_row_count = countLedgerRows(ledgerFilePath);
+    result.findings.pattern_catalog = patternCatalog;
+
+    // Envelope scan
+    const normalizedRoot = path.join(resolvedRoot, 'normalized');
+    const sessions = scanEnvelopes(normalizedRoot, findingIds);
+    result.envelopes.total = sessions.length;
+    result.envelopes.distilled = sessions.filter((s) => s.has_findings).length;
+    result.envelopes.undistilled = sessions.filter((s) => !s.has_findings).length;
+
+    for (const s of sessions) {
+      result.envelopes.by_harness[s.harness] = (result.envelopes.by_harness[s.harness] ?? 0) + 1;
+      result.envelopes.by_project[s.project_slug] = (result.envelopes.by_project[s.project_slug] ?? 0) + 1;
+    }
+
+    if (includeSessionList) {
+      result.envelopes.sessions = sessions;
+    }
+  } catch (e) {
+    result.error = `scan failed: ${e instanceof Error ? e.message : String(e)}`;
+  }
+
+  return result;
+}
+
+// ---------------------------------------------------------------------------
 // Tool registration
 // ---------------------------------------------------------------------------
 
@@ -200,73 +287,7 @@ export function register(server: McpServer): void {
         ? path.resolve(expandTilde(corpus_root))
         : path.join(process.env.USERPROFILE || process.env.HOME || '', 'projects', 'cairn', 'cairn-sessions');
 
-      const result: CorpusStatusResult = {
-        corpus_root: resolvedRoot,
-        scanned_at: new Date().toISOString(),
-        envelopes: {
-          total: 0,
-          by_harness: {},
-          by_project: {},
-          distilled: 0,
-          undistilled: 0,
-          sessions: [],
-        },
-        findings: {
-          total: 0,
-          last_distilled: null,
-          ledger_exists: false,
-          ledger_row_count: 0,
-          pattern_catalog: [],
-        },
-        schema: {
-          envelope_schema_exists: false,
-          finding_schema_exists: false,
-          manifest_exists: false,
-        },
-        error: null,
-      };
-
-      const rootStat = safeStat(resolvedRoot);
-      if (!rootStat || !rootStat.isDirectory()) {
-        result.error = `corpus_root not found or not a directory: ${resolvedRoot}`;
-        return jsonResult(result);
-      }
-
-      try {
-        // Schema presence checks
-        result.schema.envelope_schema_exists = fs.existsSync(path.join(resolvedRoot, 'schema', 'envelope.schema.json'));
-        result.schema.finding_schema_exists = fs.existsSync(path.join(resolvedRoot, 'schema', 'finding.schema.json'));
-        result.schema.manifest_exists = fs.existsSync(path.join(resolvedRoot, 'MANIFEST.md'));
-
-        // Findings scan (first, so we can annotate envelopes with has_findings)
-        const findingsDir = path.join(resolvedRoot, 'findings');
-        const ledgerFilePath = path.join(findingsDir, 'LEDGER.md');
-        const { ids: findingIds, lastDistilled, patternCatalog } = scanFindings(findingsDir);
-        result.findings.total = findingIds.size;
-        result.findings.last_distilled = lastDistilled;
-        result.findings.ledger_exists = fs.existsSync(ledgerFilePath);
-        result.findings.ledger_row_count = countLedgerRows(ledgerFilePath);
-        result.findings.pattern_catalog = patternCatalog;
-
-        // Envelope scan
-        const normalizedRoot = path.join(resolvedRoot, 'normalized');
-        const sessions = scanEnvelopes(normalizedRoot, findingIds);
-        result.envelopes.total = sessions.length;
-        result.envelopes.distilled = sessions.filter((s) => s.has_findings).length;
-        result.envelopes.undistilled = sessions.filter((s) => !s.has_findings).length;
-
-        for (const s of sessions) {
-          result.envelopes.by_harness[s.harness] = (result.envelopes.by_harness[s.harness] ?? 0) + 1;
-          result.envelopes.by_project[s.project_slug] = (result.envelopes.by_project[s.project_slug] ?? 0) + 1;
-        }
-
-        if (include_session_list) {
-          result.envelopes.sessions = sessions;
-        }
-      } catch (e) {
-        result.error = `scan failed: ${e instanceof Error ? e.message : String(e)}`;
-      }
-
+      const result = corpusStatus(resolvedRoot, include_session_list);
       return jsonResult(result);
     }
   );
