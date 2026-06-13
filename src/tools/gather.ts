@@ -124,12 +124,41 @@ function walkHarnessRoot(
 /**
  * Discover all candidate session files across all three harness roots.
  * Returns them sorted by mtime descending (newest first).
+ *
+ * @param roots Optional map of harness→root overrides. When provided, the named
+ *              harness(es) are swept from those paths instead of the hardcoded
+ *              defaults. Unspecified harnesses still use their defaults.
+ *              No-arg call is identical to today's behavior (MCP tool unchanged).
  */
-export function discoverCandidates(): SessionCandidate[] {
+export function discoverCandidates(roots?: Partial<Record<HarnessName, string>>): SessionCandidate[] {
   const candidates: SessionCandidate[] = [];
 
   for (const harnessDef of HARNESS_ROOTS) {
-    const files = walkHarnessRoot(harnessDef.root, harnessDef.fileDepth, harnessDef.extensions);
+    // Apply root override if provided for this harness
+    const overrideRoot = roots?.[harnessDef.label];
+    const effectiveRoot = overrideRoot ?? harnessDef.root;
+    const effectiveDef = { ...harnessDef, root: effectiveRoot };
+
+    // When a root override is given, try both depth 0 (files directly in the
+    // override dir) and the harness's default fileDepth (for standard layouts).
+    // This lets callers point at flat dirs like docs/study_sessions/ as well as
+    // the standard <root>/<slug>/<file> layout.
+    const depthsToTry: number[] =
+      overrideRoot !== undefined && overrideRoot !== harnessDef.root
+        ? Array.from(new Set([0, harnessDef.fileDepth]))
+        : [harnessDef.fileDepth];
+
+    const seenPaths = new Set<string>();
+    const files: string[] = [];
+    for (const depth of depthsToTry) {
+      for (const f of walkHarnessRoot(effectiveDef.root, depth, effectiveDef.extensions)) {
+        if (!seenPaths.has(f)) {
+          seenPaths.add(f);
+          files.push(f);
+        }
+      }
+    }
+
     for (const filePath of files) {
       let stat: fs.Stats;
       try {
